@@ -1,47 +1,190 @@
 ---
 title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+description: "Decode and verify Bitneedle picture-record PNGs from Rust or the browser"
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+Bitneedle picture-records are PNG images that carry a recoverable audio payload
+inside their pixels. This guide takes you from zero to reading the BRS1 stream
+out of a `.record.png` and verifying its signed release reference, using the
+Apache-2.0 crates published in the [bitneedle](https://github.com/wavey-ai/bitneedle)
+repository.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+The same crates are compiled to WebAssembly in `record-wasm` so browser tools
+and archival viewers can decode records without a Rust toolchain.
 
 ## Prerequisites
 
 Before you begin, you must have:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+- Rust 1.74+ with `cargo` (for the native path)
+- A Bitneedle picture-record PNG to decode &mdash; either your own, or one of the
+  sample records shipped in the repo under `goldenfiles/records/` (the
+  `single45` sample lives in `lori-asha-westside-single45-hq/`; the `lp`
+  sample in `lori-asha-westside-lp-hq/`)
+- For browser use only: a bundler that understands `wasm-bindgen` ESM output
+
+## What you can do with the public crates
+
+The read-path crates are all Apache-2.0 and safe to depend on from any
+project. They are versioned together; use `0.1.7` or later.
+
+| Crate | What it gives you |
+| --- | --- |
+| `record-decode` | Recover the BRS1 chunk stream and descriptor from a `.record.png` |
+| `record-descriptor` | Parse and validate the BRD1 descriptor and signed release reference |
+| `record-verify` | Verify registration receipts and creator authorisation signatures |
+| `record-sidecar` | Read the sidecar structures used for recovery and inspection |
+| `bytes2rgb` | Low-level pixel-to-byte utilities used by the decoder |
+| `bitneedle-id` | Typed prefixed ULID identifiers for public record objects |
+
+The Wavey Artist Source Licence crates (`record-cut`, `record-groove`,
+`record-label`, `record-render`, `record-cut-wasm`) are for authoring records
+and are not needed to decode or verify them.
 
 ## Get started
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Add the crates">
+    Add the read-path crates to your `Cargo.toml`. You do not need all of them
+    &mdash; pick the ones your tool actually uses.
 
-    ```bash
-    npm install your-package
+    ```toml
+    [dependencies]
+    record-decode = "0.1.7"
+    record-descriptor = "0.1.7"
+    record-verify = "0.1.7"
+    record-sidecar = "0.1.7"
+    bytes2rgb = "0.1.7"
+    bitneedle-id = "0.1.7"
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+  <Step title="Decode a .record.png to the BRS1 payload">
+    `record-decode` infers the record profile from the descriptor spirals,
+    reads the groove pixels, and returns the raw BRS1 chunk stream plus the
+    parsed descriptor. Both supported profiles (`single45` and `lp`) are
+    handled automatically.
 
-    ```bash
-    your-cli init
+    ```rust
+    use anyhow::Result;
+    use record_decode::{decode_record_png, DecodedRecord};
+
+    fn main() -> Result<()> {
+        let png_bytes = std::fs::read("record.png")?;
+
+        let DecodedRecord {
+            record_profile,
+            descriptor,
+            chunk_stream,
+        } = decode_record_png(&png_bytes)?;
+
+        println!("profile:            {record_profile}");
+        println!("payload encoding:   {}", descriptor.payload_encoding);
+        println!("stream byte length: {}", descriptor.stream_byte_length);
+        println!("recovered bytes:    {}", chunk_stream.bytes.len());
+
+        // chunk_stream.bytes starts with the BRS1 magic and can be fed
+        // straight into your BRS1 stream parser.
+        Ok(())
+    }
+    ```
+
+    If you already know the profile (for example, because you selected the
+    record by hand) you can skip inference with
+    `decode_record_png_to_chunk_stream_for_profile`. To decode against a
+    specific expected byte length &mdash; useful when replaying against a
+    canonical hash &mdash; use the `_with_length` variants.
+  </Step>
+  <Step title="Inspect the descriptor">
+    The decoded `RecordDescriptor` is the BRD1 header. It carries the payload
+    encoding (`rgb` or `toned-v1`), the tone-span carrier map for toned
+    records, and any `SignedReleaseReference` attached to the record.
+
+    ```rust
+    if let Some(reference) = descriptor.signed_release_reference.as_ref() {
+        println!("signed release key id: {}", hex::encode(&reference.key_id));
+    }
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+  <Step title="Verify the signed release reference">
+    `record-verify` checks the opaque `SignedReleaseReference` against a trust
+    provider you supply. The verifier receives the canonical
+    `release_commitment_sha256`, the `key_id`, and the Ed25519 signature; it
+    is up to your application to resolve `key_id` to a trusted creator or
+    registry key and perform the signature check.
 
-    ```bash
-    your-cli start
+    ```rust
+    use anyhow::{anyhow, Result};
+    use record_verify::{verify_signed_release, SignedReleaseStatus};
+
+    let mut verifier = |commitment: &[u8], key_id: &[u8], signature: &[u8]| -> Result<()> {
+        // Look up `key_id` in your trust store, then verify `signature`
+        // over `commitment` with Ed25519. Return Ok(()) on success.
+        my_trust_store::verify_ed25519(key_id, commitment, signature)
+            .map_err(|e| anyhow!("untrusted or invalid signature: {e}"))
+    };
+
+    match verify_signed_release(descriptor.signed_release_reference.as_ref(), &mut verifier) {
+        SignedReleaseStatus::Verified   => println!("release verified"),
+        SignedReleaseStatus::Missing    => println!("record has no signed release reference"),
+        SignedReleaseStatus::Invalid    => println!("signature did not verify"),
+        SignedReleaseStatus::Unsupported => println!("unsupported signature version"),
+        SignedReleaseStatus::UntrustedKey => println!("key id is not in the trust store"),
+    }
     ```
+
+    Structural BRS1 checks live in `record-core` and structural BRD1 checks
+    live in `record-descriptor`; `record-verify` is only responsible for
+    resolving trust and validating the signed release reference itself.
+  </Step>
+  <Step title="Decode from the browser (optional)">
+    A prebuilt WebAssembly bundle is published under `record-wasm/pkg/` and
+    exposes the same read-path surface for JavaScript and TypeScript. Point
+    your bundler at the package and call the exported functions directly.
+
+    ```js
+    import init, {
+      decodeRecordPngToPayload,
+      decodeRecordMetadataJson,
+      decodeRecordPngSidecarJson,
+    } from "@wavey/bitneedle-record";
+
+    await init();
+
+    const pngBytes = new Uint8Array(await file.arrayBuffer());
+
+    const metadata = JSON.parse(decodeRecordMetadataJson(pngBytes));
+    const result = decodeRecordPngToPayload(pngBytes);
+
+    const brs1 = result.chunkStreamBytes();
+    const payload = result.payloadBytes();
+    const silenceMap = JSON.parse(result.silenceMapJson());
+
+    console.log(metadata, brs1.length, payload.length, silenceMap);
+    ```
+
+    Use `decodeRecordPngToPayloadForProfile` when the profile is known ahead
+    of time, and `decodeRecordPngSidecarJson` to read sidecar structures for
+    inspection UIs. See `record-wasm/pkg/bitneedle_record.d.ts` for the full
+    typed surface.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Sample records
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+The repository ships golden test records you can decode without producing your
+own:
+
+- `goldenfiles/records/lori-asha-westside-single45-hq/lori-asha-westside-single45-hq.record.png` &mdash; `single45` profile
+- `goldenfiles/records/lori-asha-westside-lp-hq/lori-asha-westside-lp-hq.record.png` &mdash; `lp` profile
+
+Both profiles are defined in `record-core` (`single45` is the 7-inch geometry,
+`lp` is the 12-inch geometry). `record-decode` calls
+`normalize_record_profile_name` internally, so passing either name as a string
+is enough when you want to force a specific profile.
+
+<Tip>
+  Only the read-path crates listed above are available under Apache-2.0.
+  Authoring crates carry the Wavey Artist Source Licence and are outside the
+  scope of this guide &mdash; see the [`LICENSE-ARTIST`](https://github.com/wavey-ai/bitneedle/blob/main/LICENSE-ARTIST)
+  file for the terms that apply to them.
 </Tip>
