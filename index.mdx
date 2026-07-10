@@ -57,6 +57,17 @@ PNG bytes → exact RGBA
 
 Two record profiles are defined: `single45` (7-inch style) and `lp` (long-play style). Both encode audio as **direct RGB → bytes**; there is no groove patternisation or reverse map.
 
+## WebAssembly bundles
+
+Two prebuilt WebAssembly packages are shipped alongside the Rust workspace so browsers and JavaScript runtimes can work with Bitneedle records without a Rust toolchain. Each ships as a `.wasm` binary with generated `.js` bindings and TypeScript declarations.
+
+| Package | Licence | Use when you need to… |
+| --- | --- | --- |
+| `record-wasm` | Apache-2.0 | Decode a picture record, read BRD1/BRS1 metadata, verify signatures and receipts, or extract a BSC1 sidecar. |
+| `record-cut-wasm` | Artist Source | Author records: build payload entries, render a finished record PNG, size releases with press-format helpers, and construct sidecar containers. |
+
+`record-wasm` is the entry point most integrators need: a player, a marketplace preview, or an archival inspector should link the decode/verify bundle only. `record-cut-wasm` is only for qualifying artists and artist entities building their own records under the Wavey Artist Source Licence — its exact-fit spiral search is compiled out of the public build; only the always-shipped fast-preview renderer runs in the browser.
+
 ## Repository and crate layout
 
 The reference implementation is a Rust workspace. Crates split cleanly between **decode / verify / interoperability** (open) and **record authoring** (source-available under the artist licence).
